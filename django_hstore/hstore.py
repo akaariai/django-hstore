@@ -37,7 +37,7 @@ try:
                     if len(nested_lookups) == 2:
                         raise LookupError('Lookup nesting too deep for hstore field!')
             self.nested_lookup = self.nested_field.get_lookup(
-            nested_lookups or ['exact'], None)
+                nested_lookups or ['exact'], None)
             if not self.nested_lookup:
                 raise LookupError("Unknown nested lookup!")
 
@@ -48,32 +48,41 @@ try:
             return super(HStoreLookup, self).common_normalize(params, field, qn, connection)
 
         def normalize_params(self, params, field, qn, connection):
+            if self.nested_lookup:
+                return self.nested_lookup.normalize_params(
+                    params, self.nested_field, qn, connection)
             return [field.get_prep_lookup(self.lookup_type, params[0])]
 
         def as_sql(self, lhs_clause, value_annotation, rhs_sql, params, field,
                    qn, connection):
+            rhs_format = self.rhs_format(value_annotation, connection, rhs_sql)
             if self.lookup_type == 'exact':
                 if isinstance(params[0], dict):
-                    return '%s = %%s' % lhs_clause, params
+                    return '%s = %s' % (lhs_clause, rhs_format), params
                 else:
-                    raise ValueError("Invalid value") # Could do in get_prep_lookup
+                    raise ValueError("Invalid value")  # Could do in get_prep_lookup
             elif self.lookup_type == 'contains':
                 if isinstance(params[0], dict):
-                    return ('%s @> %%s' % lhs_clause, params)
+                    return ('%s @> %s' % (lhs_clause, rhs_format), params)
                 elif isinstance(params[0], (list, tuple)):
                     if params:
-                        return ('%s ?& %%s' % lhs_clause, params)
+                        return ('%s ?& %s' % (lhs_clause, rhs_format), params)
                     else:
                         raise ValueError('invalid value')
                 elif isinstance(params[0], basestring):
-                    return ('%s ? %%s' % lhs_clause, params)
+                    return ('%s ? %s' % (lhs_clause, rhs_format), params)
                 else:
                     raise ValueError('invalid value')
-            params.insert(0, self.lookup_type)
             casted_lhs = self.cast % ('%s -> %%s' % lhs_clause)
-            return self.nested_lookup.as_sql(
+            nested_sql, params = self.nested_lookup.as_sql(
                 casted_lhs, value_annotation, rhs_sql, params, field,
                 qn, connection)
+            try:
+                params.insert(0, self.lookup_type)
+            except:
+                params = (self.lookup_type,) + params
+            return nested_sql, params
+
 except ImportError:
     HStoreLookup = None
 

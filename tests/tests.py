@@ -82,6 +82,19 @@ class TestDictionaryField(TestCase):
         self.assertEqual(len(r), 2)
         self.assertEqual(r[0], alpha)
         self.assertEqual(r[1], gamma)
+        delta = DataBag.objects.create(
+            name='delta', data={'v': '1', 'v2': '123', 'somedate': date(2011, 1, 1)})
+        self.assertEqual(DataBag.objects.get(data__somedate__asdate__year=2011), delta)
+
+    def test_nested_in_qs_querying(self):
+        alpha = DataBag.objects.create(
+            name='alpha', data={'v': '1', 'v2': '-10'})
+        beta = DataBag.objects.create(
+            name='beta', data={'v': 'beta', 'v2': '-999'})
+        r = DataBag.objects.filter(
+            data__v__in=DataBag.objects.values_list('name'))
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0], beta)
 
     def test_multiple_key_subset_querying(self):
         alpha, beta = self._create_bags()
