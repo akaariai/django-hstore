@@ -1,4 +1,5 @@
 import unittest
+from django.db import transaction
 from .app.models import DataBag, Ref, RefsBag
 
 class TestCase(unittest.TestCase):
@@ -6,6 +7,9 @@ class TestCase(unittest.TestCase):
         DataBag.objects.all().delete()
         Ref.objects.all().delete()
         RefsBag.objects.all().delete()
+
+    def tearDown(self):
+        transaction.rollback()
 
 class TestDictionaryField(TestCase):
     def _create_bags(self):
@@ -42,6 +46,42 @@ class TestDictionaryField(TestCase):
             r = DataBag.objects.filter(data__contains={'v': bag.data['v'], 'v2': bag.data['v2']})
             self.assertEqual(len(r), 1)
             self.assertEqual(r[0], bag)
+
+    def test_nested_lookup_querying(self):
+        alpha, beta = self._create_bags()
+        for bag in (alpha, beta):
+            r = DataBag.objects.filter(data__v=bag.data['v'])
+            self.assertEqual(len(r), 1)
+            self.assertEqual(r[0], bag)
+            r = DataBag.objects.filter(data__v__exact=bag.data['v'])
+            self.assertEqual(len(r), 1)
+            self.assertEqual(r[0], bag)
+        r = DataBag.objects.filter(data__v__gt='0', data__v__lt='2')
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0], alpha)
+
+    def test_casted_lookup_querying(self):
+        from datetime import date, timedelta
+        today = date.today()
+        alpha = DataBag.objects.create(
+            name='alpha', data={'v': '1', 'v2': '-10', 'somedate': today})
+        beta = DataBag.objects.create(
+            name='beta', data={'v': '1', 'v2': '-999', 'somedate': today - timedelta(days=5)})
+        gamma = DataBag.objects.create(
+            name='gamma', data={'v': '1', 'v2': '123', 'somedate': today - timedelta(days=10)})
+        r = DataBag.objects.filter(data__somedate__asdate=today)
+        self.assertEqual(len(r), 1)
+        self.assertEqual(r[0], alpha)
+        r = DataBag.objects.filter(
+            data__somedate__asdate__lte=today - timedelta(days=5)).order_by('name')
+        self.assertEqual(len(r), 2)
+        self.assertEqual(r[0], beta)
+        self.assertEqual(r[1], gamma)
+        r = DataBag.objects.filter(
+            data__v2__asint__gte=-20).order_by('name')
+        self.assertEqual(len(r), 2)
+        self.assertEqual(r[0], alpha)
+        self.assertEqual(r[1], gamma)
 
     def test_multiple_key_subset_querying(self):
         alpha, beta = self._create_bags()

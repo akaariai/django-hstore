@@ -4,6 +4,79 @@ from django_hstore import forms
 from django_hstore.query import HStoreQuerySet
 from django_hstore.util import acquire_reference, serialize_references, unserialize_references
 
+try:
+    # Django 1.6 custom lookup support
+    from django.db.models.lookups.lookups import Lookup
+    from django.db.models.fields import CharField, IntegerField, DateField
+    class HStoreLookup(Lookup):
+
+        def __init__(self, lookup_type, nested_lookups=None):
+            self.lookup_type = lookup_type
+            self.nested_field = None
+            self.nested_lookup = None
+            if self.lookup_type in ('exact', 'contains'):
+                if nested_lookups:
+                    raise LookupError('The hstore lookup "%s" does not support nested lookups'
+                                      % self.lookup_type)
+                return
+            if len(nested_lookups) > 2:
+                raise LookupError('Lookup nesting too deep for hstore field!')
+            self.cast = '%s'
+            self.nested_field = CharField()
+            if nested_lookups:
+                if nested_lookups[0] in ('asint', 'asdate'):
+                    type_convert = nested_lookups[0]
+                    nested_lookups = [nested_lookups[1] if len(nested_lookups) == 2 else 'exact']
+                    if type_convert == 'asint':
+                        self.nested_field = IntegerField()
+                        self.cast = '(%s)::INTEGER'
+                    if type_convert == 'asdate':
+                        self.nested_field = DateField()
+                        self.cast = '(%s)::DATE'
+                else:
+                    if len(nested_lookups) == 2:
+                        raise LookupError('Lookup nesting too deep for hstore field!')
+            self.nested_lookup = self.nested_field.get_lookup(
+            nested_lookups or ['exact'], None)
+            if not self.nested_lookup:
+                raise LookupError("Unknown nested lookup!")
+
+        def common_normalize(self, params, field, qn, connection):
+            if self.nested_lookup:
+                return self.nested_lookup.common_normalize(
+                    params, self.nested_field, qn, connection)
+            return super(HStoreLookup, self).common_normalize(params, field, qn, connection)
+
+        def normalize_params(self, params, field, qn, connection):
+            return [field.get_prep_lookup(self.lookup_type, params[0])]
+
+        def as_sql(self, lhs_clause, value_annotation, rhs_sql, params, field,
+                   qn, connection):
+            if self.lookup_type == 'exact':
+                if isinstance(params[0], dict):
+                    return '%s = %%s' % lhs_clause, params
+                else:
+                    raise ValueError("Invalid value") # Could do in get_prep_lookup
+            elif self.lookup_type == 'contains':
+                if isinstance(params[0], dict):
+                    return ('%s @> %%s' % lhs_clause, params)
+                elif isinstance(params[0], (list, tuple)):
+                    if params:
+                        return ('%s ?& %%s' % lhs_clause, params)
+                    else:
+                        raise ValueError('invalid value')
+                elif isinstance(params[0], basestring):
+                    return ('%s ? %%s' % lhs_clause, params)
+                else:
+                    raise ValueError('invalid value')
+            params.insert(0, self.lookup_type)
+            casted_lhs = self.cast % ('%s -> %%s' % lhs_clause)
+            return self.nested_lookup.as_sql(
+                casted_lhs, value_annotation, rhs_sql, params, field,
+                qn, connection)
+except ImportError:
+    HStoreLookup = None
+
 class HStoreDictionary(dict):
     """A dictionary subclass which implements hstore support."""
 
@@ -41,6 +114,18 @@ class HStoreField(models.Field):
     def contribute_to_class(self, cls, name):
         super(HStoreField, self).contribute_to_class(cls, name)
         setattr(cls, self.name, self._descriptor_class(self))
+
+    def get_prep_value(self, value):
+        from datetime import date
+        if isinstance(value, dict):
+            value = value.copy()
+            for k, v in value.items():
+                if isinstance(v, date):
+                    value[k] = v.strftime('%Y-%m-%d')
+        return value
+
+    def get_lookup(self, lookup_names, target_field):
+        return HStoreLookup(lookup_names[0], lookup_names[1:])
 
     def db_type(self, connection=None):
         return 'hstore'
@@ -91,7 +176,7 @@ class Manager(models.Manager):
     def hkeys(self, attr, **params):
         queryset = (self.filter(**params) if params else self.get_query_set())
         return queryset.hkeys(attr)
-    
+
     def hpeek(self, attr, key, **params):
         queryset = (self.filter(**params) if params else self.get_query_set())
         return queryset.hpeek(attr, key)
