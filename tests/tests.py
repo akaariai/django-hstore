@@ -1,5 +1,6 @@
 import unittest
 from django.db import transaction
+from django.db.models import Avg
 from .app.models import DataBag, Ref, RefsBag
 
 class TestCase(unittest.TestCase):
@@ -59,6 +60,16 @@ class TestDictionaryField(TestCase):
         r = DataBag.objects.filter(data__v__gt='0', data__v__lt='2')
         self.assertEqual(len(r), 1)
         self.assertEqual(r[0], alpha)
+
+    def test_nested_lookup_usage(self):
+        alpha, beta = self._create_bags()
+        print(DataBag.objects.order_by('data__v').query)
+        self.assertEqual(list(DataBag.objects.order_by('data__v')),
+                         [alpha, beta])
+        self.assertEqual(list(DataBag.objects.order_by('-data__v')),
+                         [beta, alpha])
+        self.assertEqual(
+            DataBag.objects.aggregate(avg=Avg('data__v__asint')), {'avg': 1.5})
 
     def test_casted_lookup_querying(self):
         from datetime import date, timedelta
